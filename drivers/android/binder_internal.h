@@ -14,9 +14,11 @@
 #include <linux/uidgid.h>
 
 struct binder_context {
+	struct hlist_node hlist;
 	struct binder_node *binder_context_mgr_node;
 	struct mutex context_mgr_node_lock;
 	kuid_t binder_context_mgr_uid;
+	int   device;
 	const char *name;
 };
 
@@ -32,7 +34,7 @@ struct binder_context {
 struct binder_device {
 	struct hlist_node hlist;
 	struct miscdevice miscdev;
-	struct binder_context context;
+	// struct binder_context context;
 	struct inode *binderfs_inode;
 	refcount_t ref;
 };
@@ -133,6 +135,7 @@ struct binder_transaction_log_entry {
 	uint32_t return_error;
 	uint32_t return_error_param;
 	char context_name[BINDERFS_MAX_NAME + 1];
+	unsigned int ipc_inum;
 };
 
 struct binder_transaction_log {

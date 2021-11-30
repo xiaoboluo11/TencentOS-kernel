@@ -59,6 +59,8 @@
 #include <linux/seq_file.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
+#include <linux/proc_ns.h>
+#include <linux/ipc_namespace.h>
 #include <linux/pid_namespace.h>
 #include <linux/security.h>
 #include <linux/spinlock.h>
@@ -75,12 +77,23 @@
 #include "binder_internal.h"
 #include "binder_trace.h"
 
+#ifndef CONFIG_IPC_NS
+static struct ipc_namespace binder_ipc_ns = {
+	.ns.inum = PROC_IPC_INIT_INO,
+};
+
+#define ipcns  (&binder_ipc_ns)
+#else
+#define ipcns  (current->nsproxy->ipc_ns)
+#endif
+
+
 static HLIST_HEAD(binder_deferred_list);
 static DEFINE_MUTEX(binder_deferred_lock);
 
 static HLIST_HEAD(binder_devices);
-static HLIST_HEAD(binder_procs);
-static DEFINE_MUTEX(binder_procs_lock);
+// static HLIST_HEAD(binder_procs);
+// static DEFINE_MUTEX(binder_procs_lock);
 
 static HLIST_HEAD(binder_dead_nodes);
 static DEFINE_SPINLOCK(binder_dead_nodes_lock);
@@ -216,6 +229,53 @@ static struct binder_transaction_log_entry *binder_transaction_log_add(
 	memset(e, 0, sizeof(*e));
 	return e;
 }
+
+void binder_exit_ns(struct ipc_namespace *ns)
+{
+	struct binder_context *context;
+	struct hlist_node *tmp;
+
+	mutex_destroy(&ns->binder_procs_lock);
+	hlist_for_each_entry_safe(context, tmp, &ns->binder_contexts, hlist) {
+		mutex_destroy(&context->context_mgr_node_lock);
+		hlist_del(&context->hlist);
+		kfree(context);
+	}
+}
+
+int binder_init_ns(struct ipc_namespace *ns)
+{
+	int ret;
+	struct binder_device *device;
+
+	mutex_init(&ns->binder_procs_lock);
+	INIT_HLIST_HEAD(&ns->binder_procs);
+	INIT_HLIST_HEAD(&ns->binder_contexts);
+
+	hlist_for_each_entry(device, &binder_devices, hlist) {
+		struct binder_context *context;
+
+		context = kzalloc(sizeof(*context), GFP_KERNEL);
+		if (!context) {
+			ret = -ENOMEM;
+			goto err;
+		}
+
+		context->device = device->miscdev.minor;
+		context->name = device->miscdev.name;
+		context->binder_context_mgr_uid = INVALID_UID;
+		mutex_init(&context->context_mgr_node_lock);
+
+		hlist_add_head(&context->hlist, &ns->binder_contexts);
+	}
+
+	return 0;
+err:
+	binder_exit_ns(ns);
+	return ret;
+}
+
+
 
 /**
  * struct binder_work - work enqueued on a worklist
@@ -2852,6 +2912,7 @@ static void binder_transaction(struct binder_proc *proc,
 	e->data_size = tr->data_size;
 	e->offsets_size = tr->offsets_size;
 	strscpy(e->context_name, proc->context->name, BINDERFS_MAX_NAME);
+	e->ipc_inum = ipcns->ns.inum;
 
 	if (reply) {
 		binder_inner_proc_lock(proc);
@@ -5209,6 +5270,7 @@ static int binder_open(struct inode *nodp, struct file *filp)
 {
 	struct binder_proc *proc, *itr;
 	struct binder_device *binder_dev;
+	struct binder_context *context;
 	struct binderfs_info *info;
 	struct dentry *binder_binderfs_dir_entry_proc = NULL;
 	bool existing_pid = false;
@@ -5235,7 +5297,15 @@ static int binder_open(struct inode *nodp, struct file *filp)
 					  struct binder_device, miscdev);
 	}
 	refcount_inc(&binder_dev->ref);
-	proc->context = &binder_dev->context;
+	// proc->context = &binder_dev->context;
+	hlist_for_each_entry(context, &ipcns->binder_contexts, hlist) {
+		if (context->device == binder_dev->miscdev.minor) {
+			proc->context = context;
+			break;
+		}
+	}
+	if (!proc->context)
+		return -ENOENT;
 	binder_alloc_init(&proc->alloc);
 
 	binder_stats_created(BINDER_STAT_PROC);
@@ -5244,15 +5314,19 @@ static int binder_open(struct inode *nodp, struct file *filp)
 	INIT_LIST_HEAD(&proc->waiting_threads);
 	filp->private_data = proc;
 
-	mutex_lock(&binder_procs_lock);
-	hlist_for_each_entry(itr, &binder_procs, proc_node) {
+	// mutex_lock(&binder_procs_lock);
+	mutex_lock(&ipcns->binder_procs_lock);
+	// hlist_for_each_entry(itr, &binder_procs, proc_node) {
+	hlist_for_each_entry(itr, &ipcns->binder_procs, proc_node)
 		if (itr->pid == proc->pid) {
 			existing_pid = true;
 			break;
 		}
 	}
-	hlist_add_head(&proc->proc_node, &binder_procs);
-	mutex_unlock(&binder_procs_lock);
+	// hlist_add_head(&proc->proc_node, &binder_procs);
+	hlist_add_head(&proc->proc_node, &ipcns->binder_procs);
+	// mutex_unlock(&binder_procs_lock);
+	mutex_unlock(&ipcns->binder_procs_lock);
 
 	if (binder_debugfs_dir_entry_proc && !existing_pid) {
 		char strbuf[11];
@@ -5415,9 +5489,11 @@ static void binder_deferred_release(struct binder_proc *proc)
 	struct rb_node *n;
 	int threads, nodes, incoming_refs, outgoing_refs, active_transactions;
 
-	mutex_lock(&binder_procs_lock);
+	// mutex_lock(&binder_procs_lock);
+	mutex_lock(&ipcns->binder_procs_lock);
 	hlist_del(&proc->proc_node);
-	mutex_unlock(&binder_procs_lock);
+	// mutex_unlock(&binder_procs_lock);
+	mutex_unlock(&ipcns->binder_procs_lock);
 
 	mutex_lock(&context->context_mgr_node_lock);
 	if (context->binder_context_mgr_node &&
@@ -5959,10 +6035,13 @@ int binder_state_show(struct seq_file *m, void *unused)
 	if (last_node)
 		binder_put_node(last_node);
 
-	mutex_lock(&binder_procs_lock);
-	hlist_for_each_entry(proc, &binder_procs, proc_node)
+	// mutex_lock(&binder_procs_lock);
+	// hlist_for_each_entry(proc, &binder_procs, proc_node)
+	mutex_lock(&ipcns->binder_procs_lock);
+	hlist_for_each_entry(proc, &ipcns->binder_procs, proc_node)
 		print_binder_proc(m, proc, 1);
-	mutex_unlock(&binder_procs_lock);
+	// mutex_unlock(&binder_procs_lock);
+	mutex_unlock(&ipcns->binder_procs_lock);
 
 	return 0;
 }
@@ -5975,10 +6054,13 @@ int binder_stats_show(struct seq_file *m, void *unused)
 
 	print_binder_stats(m, "", &binder_stats);
 
-	mutex_lock(&binder_procs_lock);
-	hlist_for_each_entry(proc, &binder_procs, proc_node)
+	// mutex_lock(&binder_procs_lock);
+	// hlist_for_each_entry(proc, &binder_procs, proc_node)
+	mutex_lock(&ipcns->binder_procs_lock);
+	hlist_for_each_entry(proc, &ipcns->binder_procs, proc_node)
 		print_binder_proc_stats(m, proc);
-	mutex_unlock(&binder_procs_lock);
+	// mutex_unlock(&binder_procs_lock);
+	mutex_unlock(&ipcns->binder_procs_lock);
 
 	return 0;
 }
@@ -5988,10 +6070,13 @@ int binder_transactions_show(struct seq_file *m, void *unused)
 	struct binder_proc *proc;
 
 	seq_puts(m, "binder transactions:\n");
-	mutex_lock(&binder_procs_lock);
-	hlist_for_each_entry(proc, &binder_procs, proc_node)
+	// mutex_lock(&binder_procs_lock);
+	// hlist_for_each_entry(proc, &binder_procs, proc_node)
+	mutex_lock(&ipcns->binder_procs_lock);
+	hlist_for_each_entry(proc, &ipcns->binder_procs, proc_node)
 		print_binder_proc(m, proc, 0);
-	mutex_unlock(&binder_procs_lock);
+	// mutex_unlock(&binder_procs_lock);
+	mutex_unlock(&ipcns->binder_procs_lock);
 
 	return 0;
 }
@@ -6001,14 +6086,17 @@ static int proc_show(struct seq_file *m, void *unused)
 	struct binder_proc *itr;
 	int pid = (unsigned long)m->private;
 
-	mutex_lock(&binder_procs_lock);
-	hlist_for_each_entry(itr, &binder_procs, proc_node) {
+	// mutex_lock(&binder_procs_lock);
+	mutex_lock(&ipcns->binder_procs_lock);
+	// hlist_for_each_entry(itr, &binder_procs, proc_node) {
+	hlist_for_each_entry(itr, &ipcns->binder_procs, proc_node) {
 		if (itr->pid == pid) {
 			seq_puts(m, "binder proc state:\n");
 			print_binder_proc(m, itr, 1);
 		}
 	}
-	mutex_unlock(&binder_procs_lock);
+	// mutex_unlock(&binder_procs_lock);
+	mutex_unlock(&ipcns->binder_procs_lock);
 
 	return 0;
 }
@@ -6023,12 +6111,13 @@ static void print_binder_transaction_log_entry(struct seq_file *m,
 	 */
 	smp_rmb();
 	seq_printf(m,
-		   "%d: %s from %d:%d to %d:%d context %s node %d handle %d size %d:%d ret %d/%d l=%d",
+		//    "%d: %s from %d:%d to %d:%d context %s node %d handle %d size %d:%d ret %d/%d l=%d",
+		   "%d: %s from %d:%d to %d:%d ipc %d context %s node %d handle %d size %d:%d ret %d/%d l=%d",
 		   e->debug_id, (e->call_type == 2) ? "reply" :
 		   ((e->call_type == 1) ? "async" : "call "), e->from_proc,
-		   e->from_thread, e->to_proc, e->to_thread, e->context_name,
-		   e->to_node, e->target_handle, e->data_size, e->offsets_size,
-		   e->return_error, e->return_error_param,
+		   e->from_thread, e->to_proc, e->to_thread, e->ipc_inum,
+		   e->context_name, e->to_node, e->target_handle, e->data_size,
+		   e->offsets_size, e->return_error, e->return_error_param,
 		   e->return_error_line);
 	/*
 	 * read-barrier to guarantee read of debug_id_done after
@@ -6085,9 +6174,9 @@ static int __init init_binder_device(const char *name)
 	binder_device->miscdev.name = name;
 
 	refcount_set(&binder_device->ref, 1);
-	binder_device->context.binder_context_mgr_uid = INVALID_UID;
-	binder_device->context.name = name;
-	mutex_init(&binder_device->context.context_mgr_node_lock);
+	// binder_device->context.binder_context_mgr_uid = INVALID_UID;
+	// binder_device->context.name = name;
+	// mutex_init(&binder_device->context.context_mgr_node_lock);
 
 	ret = misc_register(&binder_device->miscdev);
 	if (ret < 0) {
@@ -6172,8 +6261,17 @@ static int __init binder_init(void)
 	if (ret)
 		goto err_init_binder_device_failed;
 
+#ifdef CONFIG_IPC_NS
+	ret = binder_init_ns(&init_ipc_ns);
+#else
+	ret = binder_init_ns(&binder_ipc_ns);
+#endif
+	if (ret)
+		goto err_init_namespace_failed;
+
 	return ret;
 
+err_init_namespace_failed:
 err_init_binder_device_failed:
 	hlist_for_each_entry_safe(device, tmp, &binder_devices, hlist) {
 		misc_deregister(&device->miscdev);
