@@ -471,7 +471,8 @@ __skb_flow_dissect_gre(const struct sk_buff *skb,
 	*p_proto = hdr->protocol;
 	if (gre_ver) {
 		/* Version1 must be PPTP, and check the flags */
-		if (!(*p_proto == GRE_PROTO_PPP && (hdr->flags & GRE_KEY)))
+		if (!((*p_proto == GRE_PROTO_PPP && (hdr->flags & GRE_KEY)) ||
+			(*p_proto == htons(ETH_P_IP))))
 			return FLOW_DISSECT_RET_OUT_GOOD;
 	}
 
@@ -528,31 +529,32 @@ __skb_flow_dissect_gre(const struct sk_buff *skb,
 				*p_hlen = *p_nhoff + offset;
 		}
 	} else { /* version 1, must be PPTP */
-		u8 _ppp_hdr[PPP_HDRLEN];
-		u8 *ppp_hdr;
+		if (*p_proto == GRE_PROTO_PPP) {
+			u8 _ppp_hdr[PPP_HDRLEN];
+			u8 *ppp_hdr;
 
-		if (hdr->flags & GRE_ACK)
-			offset += FIELD_SIZEOF(struct pptp_gre_header, ack);
+			if (hdr->flags & GRE_ACK)
+				offset += sizeof(((struct pptp_gre_header *) 0)->ack);
+			ppp_hdr = __skb_header_pointer(skb, *p_nhoff + offset,
+						       sizeof(_ppp_hdr),
+						       data, *p_hlen, _ppp_hdr);
+			if (!ppp_hdr)
+				return FLOW_DISSECT_RET_OUT_BAD;
+			switch (PPP_PROTOCOL(ppp_hdr)) {
+			case PPP_IP:
+				*p_proto = htons(ETH_P_IP);
+				break;
+			case PPP_IPV6:
+				*p_proto = htons(ETH_P_IPV6);
+				break;
+			default:
+				/* Could probably catch some more like MPLS */
+				break;
+			}
 
-		ppp_hdr = __skb_header_pointer(skb, *p_nhoff + offset,
-					       sizeof(_ppp_hdr),
-					       data, *p_hlen, _ppp_hdr);
-		if (!ppp_hdr)
-			return FLOW_DISSECT_RET_OUT_BAD;
-
-		switch (PPP_PROTOCOL(ppp_hdr)) {
-		case PPP_IP:
-			*p_proto = htons(ETH_P_IP);
-			break;
-		case PPP_IPV6:
-			*p_proto = htons(ETH_P_IPV6);
-			break;
-		default:
-			/* Could probably catch some more like MPLS */
-			break;
+			offset += PPP_HDRLEN;
 		}
 
-		offset += PPP_HDRLEN;
 	}
 
 	*p_nhoff += offset;

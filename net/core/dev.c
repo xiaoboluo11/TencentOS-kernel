@@ -3939,6 +3939,7 @@ set_rps_cpu(struct net_device *dev, struct sk_buff *skb,
 	return rflow;
 }
 
+extern int enable_force_rps_hash __read_mostly;
 /*
  * get_rps_cpu is called from netif_receive_skb and returns the target
  * CPU from the RPS map of the receiving queue for a given skb.
@@ -3955,7 +3956,26 @@ static int get_rps_cpu(struct net_device *dev, struct sk_buff *skb,
 	u32 tcpu;
 	u32 hash;
 
-	if (skb_rx_queue_recorded(skb)) {
+	struct iphdr *ip, _iph;
+	bool gre_proto = 0;
+
+	if (skb->protocol == __constant_htons(ETH_P_IP)) {
+		ip = skb_header_pointer(skb, 0, sizeof(struct iphdr), &_iph);
+		if (!ip)
+			goto done;
+
+		if (ip->protocol == IPPROTO_GRE &&
+			/* skip fragmented ip segments */
+			((ntohs(ip->frag_off) & IP_OFFSET) == 0))
+			gre_proto = 1;
+	}
+
+	if (enable_force_rps_hash && skb && skb->l4_hash) {
+		/* erase nic rss hash but keep sw_hash */
+		skb->l4_hash = 0;
+	}
+
+	if (skb_rx_queue_recorded(skb) && !gre_proto) {
 		u16 index = skb_get_rx_queue(skb);
 
 		if (unlikely(index >= dev->real_num_rx_queues)) {
