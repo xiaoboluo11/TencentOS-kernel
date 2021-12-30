@@ -224,6 +224,9 @@ void blk_add_timer(struct request *req)
 	 */
 	expiry = blk_rq_timeout(round_jiffies_up(req->deadline));
 
+	if (q->queue_flags & QUEUE_FLAG_NO_TIMEOUT)
+		return;
+
 	if (!timer_pending(&q->timeout) ||
 	    time_before(expiry, q->timeout.expires)) {
 		unsigned long diff = q->timeout.expires - expiry;
