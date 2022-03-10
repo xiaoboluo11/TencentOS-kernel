@@ -31,7 +31,6 @@
 #include <linux/of.h>
 #include <linux/irq_work.h>
 #include <linux/kexec.h>
-#include <linux/sched/clock.h>
 
 #include <asm/alternative.h>
 #include <asm/atomic.h>
@@ -65,8 +64,6 @@ EXPORT_PER_CPU_SYMBOL(cpu_number);
 struct secondary_data secondary_data;
 /* Number of CPUs which aren't online, but looping in kernel text. */
 int cpus_stuck_in_kernel;
-
-unsigned long long mcpu_time1, mcpu_time2, scpu_time;
 
 enum ipi_msg_type {
 	IPI_RESCHEDULE,
@@ -104,7 +101,7 @@ static DECLARE_COMPLETION(cpu_running);
 
 int __cpu_up(unsigned int cpu, struct task_struct *idle)
 {
-	int ret, try;
+	int ret;
 	long status;
 
 	/*
@@ -119,9 +116,7 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
 	/*
 	 * Now bring the CPU into our world.
 	 */
-	mcpu_time1 = sched_clock();
 	ret = boot_secondary(cpu, idle);
-	mcpu_time2 = sched_clock();
 	if (ret == 0) {
 		/*
 		 * CPU was successfully started, wait for it to come online or
@@ -131,18 +126,8 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
 					    msecs_to_jiffies(5000));
 
 		if (!cpu_online(cpu)) {
-			for (try = 1; try <= 10; try++) {
-				printk("CPU%u: try %d times, master cpu time: %llu %llu, slave cpu time: %llu\n",
-						cpu, try, mcpu_time1, mcpu_time2, scpu_time);
-				mdelay(1000);
-				if (cpu_online(cpu)) {
-					break;
-				}
-			}
-			if (try > 10) {
-				pr_crit("CPU%u: failed to come online\n", cpu);
-				ret = -EIO;
-			}
+			pr_crit("CPU%u: failed to come online\n", cpu);
+			ret = -EIO;
 		}
 	} else {
 		pr_err("CPU%u: failed to boot: %d\n", cpu, ret);
@@ -226,7 +211,6 @@ asmlinkage notrace void secondary_start_kernel(void)
 	 * point to zero page to avoid speculatively fetching new entries.
 	 */
 	cpu_uninstall_idmap();
-	scpu_time = sched_clock();
 
 	if (system_uses_irq_prio_masking())
 		init_gic_priority_masking();
