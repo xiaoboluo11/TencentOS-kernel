@@ -1978,6 +1978,8 @@ struct block_device_operations {
 	const struct pr_ops *pr_ops;
 };
 
+extern unsigned int sysctl_io_qos_enabled;
+
 extern int __blkdev_driver_ioctl(struct block_device *, fmode_t, unsigned int,
 				 unsigned long);
 extern int bdev_read_page(struct block_device *, sector_t, struct page *);

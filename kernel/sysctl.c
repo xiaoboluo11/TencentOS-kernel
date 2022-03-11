@@ -67,6 +67,7 @@
 #include <linux/bpf.h>
 #include <linux/mount.h>
 #include <linux/shield_mounts.h>
+#include <linux/blkdev.h>
 
 #include <linux/uaccess.h>
 #include <asm/processor.h>
@@ -1434,6 +1435,15 @@ static struct ctl_table kern_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0444,
 		.proc_handler	= proc_dointvec,
+	},
+	{
+		.procname	= "io_qos",
+		.data		= &sysctl_io_qos_enabled,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
 	},
 	{ }
 };
