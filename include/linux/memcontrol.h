@@ -263,6 +263,10 @@ struct mem_cgroup {
 	struct list_head event_list;
 	spinlock_t event_list_lock;
 
+	/* attach a blkio with memcg for cgroup v1 */
+	struct cgroup_subsys_state *bind_blkio;
+	char *bind_blkio_path;
+
 	struct mem_cgroup_per_node *nodeinfo[0];
 	/* WARNING: nodeinfo must be the last member here */
 };
@@ -342,6 +346,11 @@ struct mem_cgroup *mem_cgroup_from_task(struct task_struct *p);
 static inline
 struct mem_cgroup *mem_cgroup_from_css(struct cgroup_subsys_state *css){
 	return css ? container_of(css, struct mem_cgroup, css) : NULL;
+}
+
+static inline struct mem_cgroup *mem_cgroup_from_seq(struct seq_file *m)
+{
+	return mem_cgroup_from_css(seq_css(m));
 }
 
 #define mem_cgroup_from_counter(counter, member)	\
@@ -774,6 +783,11 @@ static inline struct mem_cgroup *mem_cgroup_from_id(unsigned short id)
 {
 	WARN_ON_ONCE(id);
 	/* XXX: This should always return root_mem_cgroup */
+	return NULL;
+}
+
+static inline struct mem_cgroup *mem_cgroup_from_seq(struct seq_file *m)
+{
 	return NULL;
 }
 

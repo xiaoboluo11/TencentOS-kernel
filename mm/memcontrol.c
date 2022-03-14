@@ -65,6 +65,7 @@
 #include <linux/lockdep.h>
 #include <linux/file.h>
 #include <linux/tracehook.h>
+#include <linux/namei.h>
 #include "internal.h"
 #include <net/sock.h>
 #include <net/ip.h>
@@ -324,7 +325,7 @@ struct cgroup_subsys_state *mem_cgroup_css_from_page(struct page *page)
 
 	memcg = page->mem_cgroup;
 
-	if (!memcg || !cgroup_subsys_on_dfl(memory_cgrp_subsys))
+	if (!memcg)
 		memcg = root_mem_cgroup;
 
 	return &memcg->css;
@@ -4235,6 +4236,76 @@ static u64 memory_stats_isolated_read(struct cgroup_subsys_state *css,
 	return (u64)(memcg && memcg->stats_isolated);
 }
 
+static ssize_t mem_cgroup_bind_blkio_write(struct kernfs_open_file *of,
+				char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	struct cgroup_subsys_state *css;
+	struct path path;
+	char *pbuf;
+	int ret;
+
+	buf = strstrip(buf);
+
+	/* alloc memory outside mutex */
+	pbuf = kzalloc(PATH_MAX, GFP_KERNEL);
+	if (!pbuf)
+		return -ENOMEM;
+	strncpy(pbuf, buf, PATH_MAX-1);
+
+	mutex_lock(&memcg_limit_mutex);
+
+	if (memcg->bind_blkio) {
+		WARN_ON(!memcg->bind_blkio_path);
+		kfree(memcg->bind_blkio_path);
+		memcg->bind_blkio_path = NULL;
+		css_put(memcg->bind_blkio);
+		memcg->bind_blkio = NULL;
+	}
+
+	if (!strnlen(buf, PATH_MAX)) {
+		mutex_unlock(&memcg_limit_mutex);
+		kfree(pbuf);
+
+		wb_memcg_offline(memcg);
+		INIT_LIST_HEAD(&memcg->cgwb_list);
+		return nbytes;
+	}
+
+	ret = kern_path(pbuf, LOOKUP_FOLLOW, &path);
+	if (ret)
+		goto err;
+
+	css = css_tryget_online_from_dir(path.dentry, &io_cgrp_subsys);
+	if (IS_ERR(css)) {
+		ret = PTR_ERR(css);
+		path_put(&path);
+		goto err;
+	}
+	path_put(&path);
+
+	memcg->bind_blkio_path = pbuf;
+	memcg->bind_blkio = css;
+	mutex_unlock(&memcg_limit_mutex);
+	return nbytes;
+
+ err:
+	if (pbuf)
+		kfree(pbuf);
+	mutex_unlock(&memcg_limit_mutex);
+	return ret;
+}
+
+static int mem_cgroup_bind_blkio_show(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+
+	if (memcg->bind_blkio_path)
+		seq_printf(m, "%s\n", memcg->bind_blkio_path);
+
+	return 0;
+}
+
 static struct cftype mem_cgroup_legacy_files[] = {
 	{
 		.name = "stats_isolated",
@@ -4375,6 +4446,12 @@ static struct cftype mem_cgroup_legacy_files[] = {
 		.private = MEMFILE_PRIVATE(_TCP, RES_MAX_USAGE),
 		.write = mem_cgroup_reset,
 		.read_u64 = mem_cgroup_read_u64,
+	},
+	{
+		.name = "bind_blkio",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.write = mem_cgroup_bind_blkio_write,
+		.seq_show = mem_cgroup_bind_blkio_show,
 	},
 	{ },	/* terminate */
 };
@@ -4676,6 +4753,12 @@ static void mem_cgroup_css_free(struct cgroup_subsys_state *css)
 
 	if (!cgroup_subsys_on_dfl(memory_cgrp_subsys) && memcg->tcpmem_active)
 		static_branch_dec(&memcg_sockets_enabled_key);
+
+	if (memcg->bind_blkio) {
+		WARN_ON(!memcg->bind_blkio_path);
+		kfree(memcg->bind_blkio_path);
+		css_put(memcg->bind_blkio);
+	}
 
 	vmpressure_cleanup(&memcg->vmpressure);
 	cancel_work_sync(&memcg->high_work);

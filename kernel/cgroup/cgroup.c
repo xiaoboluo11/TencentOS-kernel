@@ -56,6 +56,7 @@
 #include <linux/file.h>
 #include <linux/sched/batch.h>
 #include <net/sock.h>
+#include <linux/blk-cgroup.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/cgroup.h>
@@ -2466,6 +2467,7 @@ int cgroup_migrate_prepare_dst(struct cgroup_mgctx *mgctx)
 				 mg_preload_node) {
 		struct css_set *dst_cset;
 		struct cgroup_subsys *ss;
+		struct cgroup_subsys_state *css;
 		int ssid;
 
 		dst_cset = find_css_set(src_cset, src_cset->mg_dst_cgrp);
@@ -2473,6 +2475,18 @@ int cgroup_migrate_prepare_dst(struct cgroup_mgctx *mgctx)
 			goto err;
 
 		WARN_ON_ONCE(src_cset->mg_dst_cset || dst_cset->mg_dst_cset);
+
+		css = dst_cset->subsys[memory_cgrp_id];
+		if (css) {
+			struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+
+			css = dst_cset->subsys[io_cgrp_id];
+			if (css && memcg->bind_blkio && css != blkcg_root_css &&
+			    memcg->bind_blkio != css) {
+				pr_err("memcg already bind blkio, disallow migrate");
+				return -EPERM;
+			}
+		}
 
 		/*
 		 * If src cset equals dst, it's noop.  Drop the src.
