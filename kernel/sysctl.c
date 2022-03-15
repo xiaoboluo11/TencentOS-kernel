@@ -123,6 +123,8 @@ extern int sysctl_nr_trim_pages;
 static int sixty = 60;
 #endif
 
+extern unsigned int sysctl_allow_memcg_migrate_ignore_blkio_bind;
+
 static int __maybe_unused neg_one = -1;
 
 static int zero;
@@ -1614,6 +1616,15 @@ static struct ctl_table vm_table[] = {
 		.maxlen		= sizeof(vm_pagecache_limit_async),
 		.mode		= 0644,
 		.proc_handler	= &pc_limit_async_handler,
+	},
+	{
+		.procname	= "allow_memcg_migrate_ignore_blkio_bind",
+		.data		= &sysctl_allow_memcg_migrate_ignore_blkio_bind,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2 	= &one,
 	},
 	{
 		.procname	= "pagecache_limit_ignore_slab",
