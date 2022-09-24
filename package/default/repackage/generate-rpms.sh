@@ -30,8 +30,7 @@ kernel_default_types=(default)
 
 get_kernel_version()
 {
-	tagged_name=${tag_name#x86-}
-	kernel_version=`echo $tagged_name|cut -d- -f1`
+	kernel_version=`echo $tag_name|cut -d- -f1`
 	#kernel_version=${kernel_version}-1
 	#echo "kernel version: $kernel_version"
 	echo "kernel version: ${kernel_version}"
@@ -50,7 +49,6 @@ get_tlinux_name()
 		exit 1
 	fi
 
-	tagged_name=${tagged_name#x86-}
 	#if [ "${tagged_name#*-*-*}" != ${tagged_name} ];then
 		#echo "Error: bad tag name:$tagged_name."
 		#exit 1

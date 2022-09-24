@@ -55,8 +55,7 @@ usage()
 
 get_kernel_version()
 {
-	tagged_name=${tag_name#arm64-}
-	kernel_version=`echo $tagged_name|cut -d- -f1`
+	kernel_version=`echo $tag_name|cut -d- -f1`
 	#kernel_version=${kernel_version}-1
 	#echo "kernel version: $kernel_version"
 	echo "kernel version: ${kernel_version}"
@@ -75,7 +74,6 @@ get_tlinux_name()
 		exit 1
 	fi
 
-	tagged_name=${tagged_name#arm64-}
 	echo "${tagged_name}" | grep 'kvm_guest'
 	if [ $? -eq 0 ]; then
 		echo "start kvm guest build"
