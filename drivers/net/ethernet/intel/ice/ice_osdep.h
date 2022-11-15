@@ -1,14 +1,19 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (c) 2018, Intel Corporation. */
+/* Copyright (C) 2018-2021, Intel Corporation. */
 
 #ifndef _ICE_OSDEP_H_
 #define _ICE_OSDEP_H_
 
 #include <linux/types.h>
+#include <linux/ctype.h>
+#include <linux/delay.h>
 #include <linux/io.h>
-#ifndef CONFIG_64BIT
-#include <linux/io-64-nonatomic-lo-hi.h>
-#endif
+#include <linux/bitops.h>
+#include <linux/ethtool.h>
+#include <linux/etherdevice.h>
+#include <linux/if_ether.h>
+#include <linux/pci_ids.h>
+#include "kcompat.h"
 
 #define wr32(a, reg, value)	writel((value), ((a)->hw_addr + (reg)))
 #define rd32(a, reg)		readl((a)->hw_addr + (reg))
@@ -16,6 +21,7 @@
 #define rd64(a, reg)		readq((a)->hw_addr + (reg))
 
 #define ice_flush(a)		rd32((a), GLGEN_STAT)
+
 #define ICE_M(m, s)		((m) << (s))
 
 struct ice_dma_mem {
@@ -24,8 +30,61 @@ struct ice_dma_mem {
 	size_t size;
 };
 
-#define ice_hw_to_dev(ptr)	\
-	(&(container_of((ptr), struct ice_pf, hw))->pdev->dev)
+struct ice_hw;
+struct device *ice_hw_to_dev(struct ice_hw *hw);
+
+#define ice_info_fwlog(hw, rowsize, groupsize, buf, len)	\
+	print_hex_dump(KERN_INFO, " FWLOG: ",			\
+		       DUMP_PREFIX_NONE,			\
+		       rowsize, groupsize, buf,			\
+		       len, false)
+
+#ifdef CONFIG_SYMBOLIC_ERRNAME
+/**
+ * ice_print_errno - logs message with appended error
+ * @func: logging function (such as dev_err, netdev_warn, etc.)
+ * @obj: first argument that func takes
+ * @code: standard error code (negative integer)
+ * @fmt: format string (without "\n" in the end)
+ *
+ * Uses kernel logging function of your choice to log provided message
+ * with error code and (if allowed by kernel) its symbolic
+ * representation apended. All additional format arguments can be
+ * added at the end.
+ * Supports only functions that take an additional
+ * argument before formatted string.
+ */
+#define ice_print_errno(func, obj, code, fmt, args...) ({		\
+	long code_ = (code);						\
+	BUILD_BUG_ON(fmt[strlen(fmt) - 1] == '\n');			\
+	func(obj, fmt ", error: %ld (%pe)\n",				\
+	     ##args, code_, ERR_PTR(code_));				\
+})
+/**
+ * ice_err_arg - replaces error code as a logging function argument
+ * @err: standard error code (negative integer)
+ */
+#define ice_err_arg(err) ERR_PTR(err)
+/**
+ * ice_err_format - replaces %(l)d format corresponding to an error code
+ */
+#define ice_err_format() "%pe"
+#else
+#define ice_print_errno(func, obj, code, fmt, args...) ({		\
+	BUILD_BUG_ON(fmt[strlen(fmt) - 1] == '\n');			\
+	func(obj, fmt ", error: %ld\n",	 ##args, (long)code);		\
+})
+#define ice_err_arg(err) ((long)err)
+#define ice_err_format() "%ld"
+#endif /* CONFIG_SYMBOLIC_ERRNAME */
+#define ice_dev_err_errno(dev, code, fmt, args...)			\
+	ice_print_errno(dev_err, dev, code, fmt, ##args)
+#define ice_dev_warn_errno(dev, code, fmt, args...)			\
+	ice_print_errno(dev_warn, dev, code, fmt, ##args)
+#define ice_dev_info_errno(dev, code, fmt, args...)			\
+	ice_print_errno(dev_info, dev, code, fmt, ##args)
+#define ice_dev_dbg_errno(dev, code, fmt, args...)			\
+	ice_print_errno(dev_dbg, dev, code, fmt, ##args)
 
 #ifdef CONFIG_DYNAMIC_DEBUG
 #define ice_debug(hw, type, fmt, args...) \
@@ -51,6 +110,7 @@ do {								\
 				     rowsize, groupsize, buf,	\
 				     len, false);		\
 } while (0)
+
 #else
 #define ice_debug_array(hw, type, rowsize, groupsize, buf, len) \
 do {								\
@@ -67,6 +127,7 @@ do {								\
 				  i, ((len_l) - i), ((buf_l) + i));\
 	}							\
 } while (0)
+
 #endif /* DEBUG */
 #endif /* CONFIG_DYNAMIC_DEBUG */
 
